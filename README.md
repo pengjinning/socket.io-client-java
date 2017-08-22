@@ -11,8 +11,6 @@ See also:
 ## Installation
 The latest artifact is available on Maven Central. You'll also need [dependencies](http://socketio.github.io/socket.io-client-java/dependencies.html) to install.
 
-**WARNING: The package name was changed to "io.socket" on v0.6.1 or later. Please make sure to update your dependency settings.**
-
 ### Maven
 Add the following dependency to your `pom.xml`.
 
@@ -21,7 +19,7 @@ Add the following dependency to your `pom.xml`.
   <dependency>
     <groupId>io.socket</groupId>
     <artifactId>socket.io-client</artifactId>
-    <version>0.8.3</version>
+    <version>1.0.0</version>
   </dependency>
 </dependencies>
 ```
@@ -30,11 +28,16 @@ Add the following dependency to your `pom.xml`.
 Add it as a gradle dependency for Android Studio, in `build.gradle`:
 
 ```groovy
-compile ('io.socket:socket.io-client:0.8.3') {
+compile ('io.socket:socket.io-client:1.0.0') {
   // excluding org.json which is provided by Android
   exclude group: 'org.json', module: 'json'
 }
 ```
+
+#### Socket.IO Server 1.x suppport
+
+The current version of socket.io-client-java doesn't support socket.io server 1.x.
+Please use socket.io-client-java 0.9.x for that instead.
 
 ## Usage
 Socket.IO-client Java has almost the same api and features with the original JS client. You use `IO#socket` to initialize `Socket`:
@@ -125,14 +128,19 @@ socket.on("foo", new Emitter.Listener() {
 SSL (HTTPS, WSS) settings:
 
 ```java
+OkHttpClient okHttpClient = new OkHttpClient.Builder()
+  .hostnameVerifier(myHostnameVerifier)
+  .sslSocketFactory(mySSLContext.getSocketFactory(), myX509TrustManager)
+  .build();
+
 // default settings for all sockets
-IO.setDefaultSSLContext(mySSLContext);
-IO.setDefaultHostnameVerifier(myHostnameVerifier);
+IO.setDefaultOkHttpWebSocketFactory(okHttpClient);
+IO.setDefaultOkHttpCallFactory(okHttpClient);
 
 // set as an option
 opts = new IO.Options();
-opts.sslContext = mySSLContext;
-opts.hostnameVerifier = myHostnameVerifier;
+opts.callFactory = okHttpClient;
+opts.webSocketFactory = okHttpClient;
 socket = IO.socket("https://localhost", opts);
 ```
 

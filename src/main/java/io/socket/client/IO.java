@@ -2,13 +2,14 @@ package io.socket.client;
 
 
 import io.socket.parser.Parser;
+import okhttp3.Call;
+import okhttp3.WebSocket;
 
-import javax.net.ssl.HostnameVerifier;
-import javax.net.ssl.SSLContext;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 
@@ -23,12 +24,12 @@ public class IO {
      */
     public static int protocol = Parser.protocol;
 
-    public static void setDefaultSSLContext(SSLContext sslContext) {
-        Manager.defaultSSLContext = sslContext;
+    public static void setDefaultOkHttpWebSocketFactory(WebSocket.Factory factory) {
+        Manager.defaultWebSocketFactory = factory;
     }
 
-    public static void setDefaultHostnameVerifier(HostnameVerifier hostnameVerifier) {
-        Manager.defaultHostnameVerifier = hostnameVerifier;
+    public static void setDefaultOkHttpCallFactory(Call.Factory factory) {
+        Manager.defaultCallFactory = factory;
     }
 
     private IO() {}
@@ -72,17 +73,26 @@ public class IO {
         Manager io;
 
         if (newConnection) {
-            logger.fine(String.format("ignoring socket cache for %s", source));
+            if (logger.isLoggable(Level.FINE)) {
+                logger.fine(String.format("ignoring socket cache for %s", source));
+            }
             io = new Manager(source, opts);
         } else {
             if (!managers.containsKey(id)) {
-                logger.fine(String.format("new io instance for %s", source));
+                if (logger.isLoggable(Level.FINE)) {
+                    logger.fine(String.format("new io instance for %s", source));
+                }
                 managers.putIfAbsent(id, new Manager(source, opts));
             }
             io = managers.get(id);
         }
 
-        return io.socket(parsed.getPath());
+        String query = parsed.getQuery();
+        if (query != null && (opts.query == null || opts.query.isEmpty())) {
+            opts.query = query;
+        }
+
+        return io.socket(parsed.getPath(), opts);
     }
 
 

@@ -2,14 +2,24 @@ package io.socket.client;
 
 import io.socket.backo.Backoff;
 import io.socket.emitter.Emitter;
+import io.socket.parser.IOParser;
 import io.socket.parser.Packet;
 import io.socket.parser.Parser;
 import io.socket.thread.EventThread;
+import okhttp3.Call;
+import okhttp3.WebSocket;
 
-import javax.net.ssl.HostnameVerifier;
-import javax.net.ssl.SSLContext;
 import java.net.URI;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Queue;
+import java.util.Set;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -73,8 +83,8 @@ public class Manager extends Emitter {
      */
     public static final String EVENT_TRANSPORT = Engine.EVENT_TRANSPORT;
 
-    /*package*/ static SSLContext defaultSSLContext;
-    /*package*/ static HostnameVerifier defaultHostnameVerifier;
+    /*package*/ static WebSocket.Factory defaultWebSocketFactory;
+    /*package*/ static Call.Factory defaultCallFactory;
 
     /*package*/ ReadyState readyState;
 
@@ -123,11 +133,11 @@ public class Manager extends Emitter {
         if (opts.path == null) {
             opts.path = "/socket.io";
         }
-        if (opts.sslContext == null) {
-            opts.sslContext = defaultSSLContext;
+        if (opts.webSocketFactory == null) {
+            opts.webSocketFactory = defaultWebSocketFactory;
         }
-        if (opts.hostnameVerifier == null) {
-            opts.hostnameVerifier = defaultHostnameVerifier;
+        if (opts.callFactory == null) {
+            opts.callFactory = defaultCallFactory;
         }
         this.opts = opts;
         this.nsps = new ConcurrentHashMap<String, Socket>();
@@ -146,8 +156,8 @@ public class Manager extends Emitter {
         this.uri = uri;
         this.encoding = false;
         this.packetBuffer = new ArrayList<Packet>();
-        this.encoder = new Parser.Encoder();
-        this.decoder = new Parser.Decoder();
+        this.encoder = opts.encoder != null ? opts.encoder : new IOParser.Encoder();
+        this.decoder = opts.decoder != null ? opts.decoder : new IOParser.Decoder();
     }
 
     private void emitAll(String event, Object... args) {
@@ -161,9 +171,15 @@ public class Manager extends Emitter {
      * Update `socket.id` of all sockets
      */
     private void updateSocketIds() {
-        for (Socket socket : this.nsps.values()) {
-            socket.id = this.engine.id();
+        for (Map.Entry<String, Socket> entry : this.nsps.entrySet()) {
+            String nsp = entry.getKey();
+            Socket socket = entry.getValue();
+            socket.id = this.generateId(nsp);
         }
+    }
+
+    private String generateId(String nsp) {
+        return ("/".equals(nsp) ? "" : (nsp + "#")) + this.engine.id();
     }
 
     public boolean reconnection() {
@@ -250,10 +266,14 @@ public class Manager extends Emitter {
         EventThread.exec(new Runnable() {
             @Override
             public void run() {
-                logger.fine(String.format("readyState %s", Manager.this.readyState));
+                if (logger.isLoggable(Level.FINE)) {
+                    logger.fine(String.format("readyState %s", Manager.this.readyState));
+                }
                 if (Manager.this.readyState == ReadyState.OPEN || Manager.this.readyState == ReadyState.OPENING) return;
 
-                logger.fine(String.format("opening %s", Manager.this.uri));
+                if (logger.isLoggable(Level.FINE)) {
+                    logger.fine(String.format("opening %s", Manager.this.uri));
+                }
                 Manager.this.engine = new Engine(Manager.this.uri, Manager.this.opts);
                 final io.socket.engineio.client.Socket socket = Manager.this.engine;
                 final Manager self = Manager.this;
@@ -377,12 +397,12 @@ public class Manager extends Emitter {
                 Manager.this.onclose((String)objects[0]);
             }
         }));
-        this.subs.add(On.on(this.decoder, Parser.Decoder.EVENT_DECODED, new Listener() {
+        this.decoder.onDecoded(new Parser.Decoder.Callback() {
             @Override
-            public void call(Object... objects) {
-                Manager.this.ondecoded((Packet) objects[0]);
+            public void call (Packet packet) {
+                Manager.this.ondecoded(packet);
             }
-        }));
+        });
     }
 
     private void onping() {
@@ -416,12 +436,13 @@ public class Manager extends Emitter {
      * Initializes {@link Socket} instances for each namespaces.
      *
      * @param nsp namespace.
+     * @param opts options.
      * @return a socket instance for the namespace.
      */
-    public Socket socket(String nsp) {
+    public Socket socket(final String nsp, Options opts) {
         Socket socket = this.nsps.get(nsp);
         if (socket == null) {
-            socket = new Socket(this, nsp);
+            socket = new Socket(this, nsp, opts);
             Socket _socket = this.nsps.putIfAbsent(nsp, socket);
             if (_socket != null) {
                 socket = _socket;
@@ -437,12 +458,16 @@ public class Manager extends Emitter {
                 socket.on(Socket.EVENT_CONNECT, new Listener() {
                     @Override
                     public void call(Object... objects) {
-                        s.id = self.engine.id();
+                        s.id = self.generateId(nsp);
                     }
                 });
             }
         }
         return socket;
+    }
+
+    public Socket socket(String nsp) {
+        return socket(nsp, null);
     }
 
     /*package*/ void destroy(Socket socket) {
@@ -453,8 +478,14 @@ public class Manager extends Emitter {
     }
 
     /*package*/ void packet(Packet packet) {
-        logger.fine(String.format("writing packet %s", packet));
+        if (logger.isLoggable(Level.FINE)) {
+            logger.fine(String.format("writing packet %s", packet));
+        }
         final Manager self = this;
+
+        if (packet.query != null && !packet.query.isEmpty() && packet.type == Parser.CONNECT) {
+            packet.nsp += "?" + packet.query;
+        }
 
         if (!self.encoding) {
             self.encoding = true;
@@ -489,6 +520,7 @@ public class Manager extends Emitter {
 
         On.Handle sub;
         while ((sub = this.subs.poll()) != null) sub.destroy();
+        this.decoder.onDecoded(null);
 
         this.packetBuffer.clear();
         this.encoding = false;
@@ -614,6 +646,8 @@ public class Manager extends Emitter {
         public long reconnectionDelay;
         public long reconnectionDelayMax;
         public double randomizationFactor;
+        public Parser.Encoder encoder;
+        public Parser.Decoder decoder;
 
         /**
          * Connection timeout (ms). Set -1 to disable.
